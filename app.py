@@ -29,59 +29,54 @@ def smart_join(vals):
             s_val = str(val).strip()
             if s_val.endswith('.0'):
                 s_val = s_val[:-2]
-            # Önceden birleşmiş virgüllü veriler varsa (eski dosyalardan gelen), onları da ayırıp tekilleştir
             for sub_val in s_val.split(','):
                 clean_sub = sub_val.strip()
                 if clean_sub:
                     parts.append(clean_sub)
-    # Aynı kelimeleri (Örn: "Göç, Göç") tekilleştirerek birleştir
     return ", ".join(dict.fromkeys(parts))
 
 def consolidate_dataframe(df):
-    """Aynı dosya içindeki veya eski dosyalardaki tekrar eden kayıtları virgülle birleştirerek tekilleştirir."""
+    """TC ve KONU bazında kayıtları virgülle birleştirerek tekilleştirir."""
     agg_funcs = {}
     for col in df.columns:
-        if col in ['TEMP_TC', 'TEMP_AD', 'TEMP_KONU']:
+        if col in ['TEMP_TC', 'TEMP_KONU']:
             continue
         if col in CONCAT_COLS:
-            # Özel alanları virgülle birleştir
             agg_funcs[col] = lambda x: smart_join(x.tolist())
         else:
-            # Diğer alanlarda en son dolu (boş olmayan) veriyi al
+            # Diğer alanlarda (İsim dahil) en son dolu veriyi al
             agg_funcs[col] = lambda x: x.dropna().iloc[-1] if not x.dropna().empty else None
             
-    return df.groupby(['TEMP_TC', 'TEMP_AD', 'TEMP_KONU'], as_index=False).agg(agg_funcs)
+    return df.groupby(['TEMP_TC', 'TEMP_KONU'], as_index=False).agg(agg_funcs)
 
 def process_data(list_of_old_dfs, df_new):
-    required_cols = ['İTİRAZ KONUSU KİŞİNİN ADI SOYADI', 'İTİRAZ KONUSU KİŞİNİN TC KİMLİK NO', 'KONU']
+    # Artık 'İTİRAZ KONUSU KİŞİNİN ADI SOYADI' eşleştirme için zorunlu değil (sadece kolon olarak varlığı kontrol edilir)
+    required_cols = ['İTİRAZ KONUSU KİŞİNİN TC KİMLİK NO', 'KONU']
     
     if not list_of_old_dfs or df_new is None or df_new.empty:
         return None, 0, 0, None, None
         
     df_old_all = pd.concat(list_of_old_dfs, ignore_index=True)
     
-    # Kolon kontrolü
     for col in required_cols:
         if col not in df_old_all.columns or col not in df_new.columns:
             st.error(f"Kritik hata: '{col}' kolonu dosyalarda bulunamadı!")
             return None, None, None, None, None
 
-    # Standartlaştırma (TC, Ad ve Konu)
+    # Standartlaştırma (Sadece TC ve KONU eşleştirme anahtarı olacak)
     df_old_all['TEMP_TC'] = df_old_all['İTİRAZ KONUSU KİŞİNİN TC KİMLİK NO'].apply(clean_tc)
-    df_old_all['TEMP_AD'] = df_old_all['İTİRAZ KONUSU KİŞİNİN ADI SOYADI'].apply(clean_text)
     df_old_all['TEMP_KONU'] = df_old_all['KONU'].apply(clean_text)
     
     df_new['TEMP_TC'] = df_new['İTİRAZ KONUSU KİŞİNİN TC KİMLİK NO'].apply(clean_tc)
-    df_new['TEMP_AD'] = df_new['İTİRAZ KONUSU KİŞİNİN ADI SOYADI'].apply(clean_text)
     df_new['TEMP_KONU'] = df_new['KONU'].apply(clean_text)
 
-    # 1. ADIM: Eski dosyaları ve yeni dosyayı kendi içinde virgülle birleştirerek tekilleştir
+    # 1. ADIM: Kendi içlerinde TC+KONU bazında tekilleştir
     df_old_all = consolidate_dataframe(df_old_all)
     df_new = consolidate_dataframe(df_new)
 
-    # İndeksleri 3'lü anahtara göre kur (Orijinal kolonları kaybetmemek için drop=False yapıyoruz)
-    df_old_indexed = df_old_all.set_index(['TEMP_TC', 'TEMP_AD', 'TEMP_KONU'], drop=False)
-    df_new_indexed = df_new.set_index(['TEMP_TC', 'TEMP_AD', 'TEMP_KONU'], drop=False)
+    # İndeksleri 2'li anahtara (TC ve KONU) göre kur
+    df_old_indexed = df_old_all.set_index(['TEMP_TC', 'TEMP_KONU'], drop=False)
+    df_new_indexed = df_new.set_index(['TEMP_TC', 'TEMP_KONU'], drop=False)
 
     old_keys = set(df_old_indexed.index)
     new_keys = set(df_new_indexed.index)
@@ -92,30 +87,26 @@ def process_data(list_of_old_dfs, df_new):
     updated_count = len(updated_keys)
     added_count = len(new_keys - old_keys)
 
-    # UI'da göstermek için güncellenen kayıtları çekiyoruz
     if updated_count > 0:
         df_updated_records = df_new_indexed.loc[list(updated_keys)].reset_index(drop=True)
     else:
         df_updated_records = pd.DataFrame()
 
-    # 2. ADIM: ESKİ VE YENİ DOSYALARI BİRLEŞTİRME VE TAMAMLAMA MANTIĞI
+    # 2. ADIM: BİRLEŞTİRME MANTIĞI
     final_rows = []
-    all_cols = [col for col in df_new.columns if col not in ['TEMP_TC', 'TEMP_AD', 'TEMP_KONU']]
+    all_cols = [col for col in df_new.columns if col not in ['TEMP_TC', 'TEMP_KONU']]
 
-    # Yeni Dosyadaki Tüm Kayıtları İşle
     for key in new_keys:
         new_row = df_new_indexed.loc[key].copy()
         
-        if key in old_keys:  # Eğer bu kayıt eskide de varsa
+        if key in old_keys:
             old_row = df_old_indexed.loc[key]
             for col in all_cols:
                 val_new = new_row[col]
                 val_old = old_row[col] if col in old_row.index else pd.NA
                 
-                # Kural 1: Belirtilen kolonlarda verileri virgülle birleştir
                 if col in CONCAT_COLS:
                     new_row[col] = smart_join([val_old, val_new])
-                # Kural 2: Diğer kolonlarda yeni hücre boşsa eskisinden al
                 else:
                     if pd.isna(val_new) or str(val_new).strip() == "":
                         new_row[col] = val_old
@@ -124,26 +115,24 @@ def process_data(list_of_old_dfs, df_new):
 
     df_final_new = pd.DataFrame(final_rows, columns=all_cols)
 
-    # Sadece Eskide Olan Kayıtları Sonuna Ekle (Veri Kaybı Olmaması İçin)
     if old_only_keys:
         df_old_only = df_old_indexed.loc[list(old_only_keys), all_cols].copy()
         df_result = pd.concat([df_final_new, df_old_only], ignore_index=True)
     else:
         df_result = df_final_new
 
-    # Hatalı/Eksik TC Kontrolü
+    # Hata Kontrolü
     df_result['TC_CHECK_TEMP'] = df_result['İTİRAZ KONUSU KİŞİNİN TC KİMLİK NO'].apply(clean_tc)
     invalid_tc_df = df_result[~df_result['TC_CHECK_TEMP'].str.match(r'^\d{11}$')]
     df_result = df_result.drop(columns=['TC_CHECK_TEMP'])
 
     return df_result, updated_count, added_count, invalid_tc_df, df_updated_records
 
-# UI Tasarımı (Birebir Aynı)
+# UI Tasarımı
 st.title("📊 Excel Kayıt Birleştirme Aracı")
 st.markdown("""
 - Yüklediğiniz dosyalar **sunucuya kaydedilmez**, işlem bittiğinde veya sayfayı yenilediğinizde sistemden silinir.
-- Eski aylara ait **birden fazla Excel dosyasını** sol taraftan seçip yükleyebilirsiniz.
-- 💡 *Sistem kayıtları birleştirirken "TC Kimlik No", "Ad Soyad" ve "Konu" eşleşmesine bakar. Eğer yeni dosyada alan boşsa eski dosyadaki veriyle tamamlar. Belirli alanları ise hem eski dosyaların kendi arasında hem de yeni dosya ile birleştirirken virgülle birleştirir.*
+- 💡 *Sistem kayıtları artık sadece **"TC Kimlik No"** ve **"Konu"** eşleşmesine göre birleştirir. İsim farklılıkları eşleşmeyi etkilemez.*
 """)
 
 col1, col2 = st.columns(2)
@@ -156,12 +145,9 @@ with col2:
 
 if len(old_files) > 0 and new_file is not None:
     if st.button("🚀 Verileri Birleştir"):
-        with st.spinner("Excel dosyaları okunuyor ve birleştiriliyor..."):
+        with st.spinner("TC ve Konu bazlı eşleştirme yapılıyor..."):
             try:
-                list_of_old_dfs = []
-                for f in old_files:
-                    list_of_old_dfs.append(pd.read_excel(f))
-                
+                list_of_old_dfs = [pd.read_excel(f) for f in old_files]
                 df_new = pd.read_excel(new_file)
                 
                 df_merged, updated_count, added_count, invalid_tc_df, df_updated_records = process_data(list_of_old_dfs, df_new)
@@ -176,24 +162,24 @@ if len(old_files) > 0 and new_file is not None:
                     mcol4.metric("Toplam Çıktı Kayıt", len(df_merged))
                     
                     if not df_updated_records.empty:
-                        with st.expander(f"🔄 Güncellenen (Eski Veri ile Tamamlanan) {updated_count} Kaydı İncele"):
-                            st.dataframe(df_updated_records[['İTİRAZ KONUSU KİŞİNİN ADI SOYADI', 'İTİRAZ KONUSU KİŞİNİN TC KİMLİK NO', 'KONU']])
+                        with st.expander(f"🔄 Güncellenen (TC & Konu Eşleşen) {updated_count} Kaydı İncele"):
+                            cols_to_show = [c for c in ['İTİRAZ KONUSU KİŞİNİN ADI SOYADI', 'İTİRAZ KONUSU KİŞİNİN TC KİMLİK NO', 'KONU'] if c in df_updated_records.columns]
+                            st.dataframe(df_updated_records[cols_to_show])
                     
                     if not invalid_tc_df.empty:
-                        st.warning(f"⚠️ Dikkat: {len(invalid_tc_df)} kayıtta hatalı veya eksik TC Kimlik No tespit edildi (11 hane olmalı).")
-                        with st.expander("Hatalı TC Numarasına Sahip Kayıtları İncele"):
-                            st.dataframe(invalid_tc_df[['İTİRAZ KONUSU KİŞİNİN ADI SOYADI', 'İTİRAZ KONUSU KİŞİNİN TC KİMLİK NO', 'KONU']])
+                        st.warning(f"⚠️ Dikkat: {len(invalid_tc_df)} kayıtta hatalı TC tespit edildi.")
+                        with st.expander("Hatalı Kayıtları İncele"):
+                            st.dataframe(invalid_tc_df)
                     else:
-                        st.info("✅ Tüm kayıtların TC Kimlik Numarası formatı doğru (11 Hane).")
+                        st.info("✅ Tüm TC Kimlik Numarası formatları doğru.")
 
                     output = io.BytesIO()
                     with pd.ExcelWriter(output, engine='openpyxl') as writer:
                         df_merged.to_excel(writer, index=False, sheet_name='Birleştirilmiş Veri')
-                    processed_data = output.getvalue()
-
+                    
                     st.download_button(
                         label="📥 Birleştirilmiş Yeni Excel'i İndir",
-                        data=processed_data,
+                        data=output.getvalue(),
                         file_name="Guncel_Birlestirilmis_Master.xlsx",
                         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
                     )
