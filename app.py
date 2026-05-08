@@ -4,11 +4,12 @@ import io
 
 st.set_page_config(page_title="Excel Kayıt Birleştirme Aracı", page_icon="📊", layout="wide")
 
-# Virgülle birleştirilmesi istenen özel kolonlar
+# Virgülle birleştirilmesi istenen özel kolonlar (İzlem alanları eklendi)
 CONCAT_COLS = [
     'PERFORMANS DÖNEMİ', 'DaBT-İPA-Hib-Hep-B', 'HEP B', 'BCG', 'KKK', 
     'HEP A', 'KPA', 'OPA', 'SU ÇİÇEĞİ', 'DaBT-İPA', 'TD', 
-    'İTİRAZ NEDENİ', 'ASM RET NEDENİ', 'İLÇE SAĞLIK RET NEDENİ'
+    'İTİRAZ NEDENİ', 'ASM RET NEDENİ', 'İLÇE SAĞLIK RET NEDENİ',
+    'GEBE İZLEM', 'LOHUSA İZLEM', 'BEBEK İZLEM', 'ÇOCUK İZLEM'
 ]
 
 def clean_tc(tc):
@@ -50,7 +51,7 @@ def consolidate_dataframe(df):
     return df.groupby(['TEMP_TC', 'TEMP_KONU'], as_index=False).agg(agg_funcs)
 
 def process_data(list_of_old_dfs, df_new):
-    # Artık 'İTİRAZ KONUSU KİŞİNİN ADI SOYADI' eşleştirme için zorunlu değil (sadece kolon olarak varlığı kontrol edilir)
+    # Eşleştirme için zorunlu kolonlar sadece TC ve KONU
     required_cols = ['İTİRAZ KONUSU KİŞİNİN TC KİMLİK NO', 'KONU']
     
     if not list_of_old_dfs or df_new is None or df_new.empty:
@@ -63,7 +64,7 @@ def process_data(list_of_old_dfs, df_new):
             st.error(f"Kritik hata: '{col}' kolonu dosyalarda bulunamadı!")
             return None, None, None, None, None
 
-    # Standartlaştırma (Sadece TC ve KONU eşleştirme anahtarı olacak)
+    # Standartlaştırma (Sadece TC ve KONU eşleştirme anahtarı)
     df_old_all['TEMP_TC'] = df_old_all['İTİRAZ KONUSU KİŞİNİN TC KİMLİK NO'].apply(clean_tc)
     df_old_all['TEMP_KONU'] = df_old_all['KONU'].apply(clean_text)
     
@@ -133,6 +134,7 @@ st.title("📊 Excel Kayıt Birleştirme Aracı")
 st.markdown("""
 - Yüklediğiniz dosyalar **sunucuya kaydedilmez**, işlem bittiğinde veya sayfayı yenilediğinizde sistemden silinir.
 - 💡 *Sistem kayıtları artık sadece **"TC Kimlik No"** ve **"Konu"** eşleşmesine göre birleştirir. İsim farklılıkları eşleşmeyi etkilemez.*
+- 💡 *İzlem alanları (Gebe, Lohusa, Bebek, Çocuk) ve diğer aşı/neden alanları eşleşen kayıtlarda virgülle birleştirilir.*
 """)
 
 col1, col2 = st.columns(2)
