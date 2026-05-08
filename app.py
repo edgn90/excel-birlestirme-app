@@ -20,14 +20,14 @@ def process_data(df_old, list_of_new_dfs):
     required_cols = ['İTİRAZ KONUSU KİŞİNİN ADI SOYADI', 'İTİRAZ KONUSU KİŞİNİN TC KİMLİK NO']
     
     if not list_of_new_dfs:
-        return None, 0, 0, None
+        return None, 0, 0, None, None
         
     df_new = pd.concat(list_of_new_dfs, ignore_index=True)
     
     for col in required_cols:
         if col not in df_old.columns or col not in df_new.columns:
             st.error(f"Kritik hata: '{col}' kolonu dosyalarda bulunamadı!")
-            return None, None, None, None
+            return None, None, None, None, None
 
     df_old['TEMP_TC'] = df_old['İTİRAZ KONUSU KİŞİNİN TC KİMLİK NO'].apply(clean_tc)
     df_old['TEMP_AD'] = df_old['İTİRAZ KONUSU KİŞİNİN ADI SOYADI'].apply(clean_name)
@@ -43,8 +43,17 @@ def process_data(df_old, list_of_new_dfs):
     old_keys = set(df_old_indexed.index)
     new_keys = set(df_new_indexed.index)
     
-    updated_count = len(new_keys.intersection(old_keys))
+    # Kesişen (hem eskide hem yenide olan) anahtarları buluyoruz
+    updated_keys = new_keys.intersection(old_keys)
+    
+    updated_count = len(updated_keys)
     added_count = len(new_keys - old_keys)
+
+    # Güncellenen kayıtları ayrı bir DataFrame olarak çekiyoruz
+    if updated_count > 0:
+        df_updated_records = df_new_indexed.loc[list(updated_keys)].reset_index()
+    else:
+        df_updated_records = pd.DataFrame()
 
     df_merged_indexed = df_new_indexed.combine_first(df_old_indexed)
     df_merged = df_merged_indexed.reset_index(drop=True)
@@ -53,7 +62,7 @@ def process_data(df_old, list_of_new_dfs):
     invalid_tc_df = df_merged[~df_merged['TC_CHECK_TEMP'].str.match(r'^\d{11}$')]
     df_merged = df_merged.drop(columns=['TC_CHECK_TEMP'])
 
-    return df_merged, updated_count, added_count, invalid_tc_df
+    return df_merged, updated_count, added_count, invalid_tc_df, df_updated_records
 
 # UI Tasarımı
 st.title("📊 Excel Kayıt Birleştirme Aracı")
@@ -80,7 +89,7 @@ if old_file is not None and len(new_files) > 0:
                 for file in new_files:
                     list_of_new_dfs.append(pd.read_excel(file))
                 
-                df_merged, updated_count, added_count, invalid_tc_df = process_data(df_old, list_of_new_dfs)
+                df_merged, updated_count, added_count, invalid_tc_df, df_updated_records = process_data(df_old, list_of_new_dfs)
                 
                 if df_merged is not None:
                     st.success("İşlem başarıyla tamamlandı!")
@@ -91,6 +100,12 @@ if old_file is not None and len(new_files) > 0:
                     mcol3.metric("Yeni Eklenen Kayıt", added_count)
                     mcol4.metric("Toplam Çıktı Kayıt", len(df_merged))
                     
+                    # Güncellenen Kayıtları Gösterme
+                    if not df_updated_records.empty:
+                        with st.expander(f"🔄 Güncellenen (Üzerine Yazılan) {updated_count} Kaydı İncele"):
+                            st.dataframe(df_updated_records[['İTİRAZ KONUSU KİŞİNİN ADI SOYADI', 'İTİRAZ KONUSU KİŞİNİN TC KİMLİK NO']])
+                    
+                    # Hatalı TC Uyarıları
                     if not invalid_tc_df.empty:
                         st.warning(f"⚠️ Dikkat: {len(invalid_tc_df)} kayıtta hatalı veya eksik TC Kimlik No tespit edildi (11 hane olmalı).")
                         with st.expander("Hatalı TC Numarasına Sahip Kayıtları İncele"):
