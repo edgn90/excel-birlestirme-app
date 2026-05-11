@@ -1,6 +1,7 @@
 import streamlit as st
 import pandas as pd
 import io
+from datetime import datetime
 
 st.set_page_config(page_title="Excel Kayıt Birleştirme Aracı", page_icon="📊", layout="wide")
 
@@ -175,14 +176,18 @@ if len(old_files) > 0 and new_file is not None:
                     else:
                         st.info("✅ Tüm TC Kimlik Numarası formatları doğru.")
 
+                    # Dinamik Dosya İsmi Oluşturma (Geliştirme eklendi)
+                    current_time = datetime.now().strftime("%d-%m-%Y_%H-%M")
+                    file_name_dynamic = f"Birlestirilmis_Master_{current_time}.xlsx"
+
                     output = io.BytesIO()
                     with pd.ExcelWriter(output, engine='openpyxl') as writer:
                         df_merged.to_excel(writer, index=False, sheet_name='Birleştirilmiş Veri')
                     
                     st.download_button(
-                        label="📥 Birleştirilmiş Yeni Excel'i İndir",
+                        label=f"📥 {file_name_dynamic} İndir",
                         data=output.getvalue(),
-                        file_name="Guncel_Birlestirilmis_Master.xlsx",
+                        file_name=file_name_dynamic,
                         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
                     )
             except Exception as e:
