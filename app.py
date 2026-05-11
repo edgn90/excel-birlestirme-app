@@ -5,7 +5,7 @@ from datetime import datetime
 
 st.set_page_config(page_title="Excel Kayıt Birleştirme Aracı", page_icon="📊", layout="wide")
 
-# Virgülle birleştirilmesi istenen özel kolonlar (İzlem alanları eklendi)
+# Virgülle birleştirilmesi istenen özel kolonlar
 CONCAT_COLS = [
     'PERFORMANS DÖNEMİ', 'DaBT-İPA-Hib-Hep-B', 'HEP B', 'BCG', 'KKK', 
     'HEP A', 'KPA', 'OPA', 'SU ÇİÇEĞİ', 'DaBT-İPA', 'TD', 
@@ -52,7 +52,6 @@ def consolidate_dataframe(df):
     return df.groupby(['TEMP_TC', 'TEMP_KONU'], as_index=False).agg(agg_funcs)
 
 def process_data(list_of_old_dfs, df_new):
-    # Eşleştirme için zorunlu kolonlar sadece TC ve KONU
     required_cols = ['İTİRAZ KONUSU KİŞİNİN TC KİMLİK NO', 'KONU']
     
     if not list_of_old_dfs or df_new is None or df_new.empty:
@@ -65,7 +64,7 @@ def process_data(list_of_old_dfs, df_new):
             st.error(f"Kritik hata: '{col}' kolonu dosyalarda bulunamadı!")
             return None, None, None, None, None
 
-    # Standartlaştırma (Sadece TC ve KONU eşleştirme anahtarı)
+    # Standartlaştırma
     df_old_all['TEMP_TC'] = df_old_all['İTİRAZ KONUSU KİŞİNİN TC KİMLİK NO'].apply(clean_tc)
     df_old_all['TEMP_KONU'] = df_old_all['KONU'].apply(clean_text)
     
@@ -76,7 +75,6 @@ def process_data(list_of_old_dfs, df_new):
     df_old_all = consolidate_dataframe(df_old_all)
     df_new = consolidate_dataframe(df_new)
 
-    # İndeksleri 2'li anahtara (TC ve KONU) göre kur
     df_old_indexed = df_old_all.set_index(['TEMP_TC', 'TEMP_KONU'], drop=False)
     df_new_indexed = df_new.set_index(['TEMP_TC', 'TEMP_KONU'], drop=False)
 
@@ -88,11 +86,6 @@ def process_data(list_of_old_dfs, df_new):
     
     updated_count = len(updated_keys)
     added_count = len(new_keys - old_keys)
-
-    if updated_count > 0:
-        df_updated_records = df_new_indexed.loc[list(updated_keys)].reset_index(drop=True)
-    else:
-        df_updated_records = pd.DataFrame()
 
     # 2. ADIM: BİRLEŞTİRME MANTIĞI
     final_rows = []
@@ -128,67 +121,89 @@ def process_data(list_of_old_dfs, df_new):
     invalid_tc_df = df_result[~df_result['TC_CHECK_TEMP'].str.match(r'^\d{11}$')]
     df_result = df_result.drop(columns=['TC_CHECK_TEMP'])
 
+    # Güncellenen kayıtlar (UI tablo için)
+    if updated_count > 0:
+        df_updated_records = df_new_indexed.loc[list(updated_keys)].reset_index(drop=True)
+    else:
+        df_updated_records = pd.DataFrame()
+
     return df_result, updated_count, added_count, invalid_tc_df, df_updated_records
 
 # UI Tasarımı
 st.title("📊 Excel Kayıt Birleştirme Aracı")
 st.markdown("""
-- Yüklediğiniz dosyalar **sunucuya kaydedilmez**, işlem bittiğinde veya sayfayı yenilediğinizde sistemden silinir.
-- 💡 *Sistem kayıtları artık sadece **"TC Kimlik No"** ve **"Konu"** eşleşmesine göre birleştirir. İsim farklılıkları eşleşmeyi etkilemez.*
-- 💡 *İzlem alanları (Gebe, Lohusa, Bebek, Çocuk) ve diğer aşı/neden alanları eşleşen kayıtlarda virgülle birleştirilir.*
+- Yüklediğiniz dosyalar **sunucuya kaydedilmez**, işlem bittiğinde sistemden silinir.
+- 💡 *Sistem kayıtları artık sadece **"TC Kimlik No"** ve **"Konu"** eşleşmesine göre birleştirir.*
+- 💡 *İşlem bittikten sonra konulara göre filtreleme yapabilir ve filtrelenmiş halini indirebilirsiniz.*
 """)
 
 col1, col2 = st.columns(2)
 
 with col1:
-    old_files = st.file_uploader("📂 Eski Versiyon Excel'ler (Birden fazla seçilebilir)", type=['xlsx', 'xls'], accept_multiple_files=True)
+    old_files = st.file_uploader("📂 Eski Versiyon Excel'ler (Birden fazla)", type=['xlsx', 'xls'], accept_multiple_files=True)
 
 with col2:
-    new_file = st.file_uploader("🆕 Yeni Ay Excel Dosyası (Sadece Güncel Dosya)", type=['xlsx', 'xls'])
+    new_file = st.file_uploader("🆕 Yeni Ay Excel Dosyası (Güncel)", type=['xlsx', 'xls'])
 
 if len(old_files) > 0 and new_file is not None:
-    if st.button("🚀 Verileri Birleştir"):
+    if st.button("🚀 Verileri Birleştir ve Analiz Et"):
         with st.spinner("TC ve Konu bazlı eşleştirme yapılıyor..."):
             try:
                 list_of_old_dfs = [pd.read_excel(f) for f in old_files]
                 df_new = pd.read_excel(new_file)
                 
-                df_merged, updated_count, added_count, invalid_tc_df, df_updated_records = process_data(list_of_old_dfs, df_new)
+                df_result, updated_count, added_count, invalid_tc_df, df_updated_records = process_data(list_of_old_dfs, df_new)
                 
-                if df_merged is not None:
-                    st.success("İşlem başarıyla tamamlandı!")
+                if df_result is not None:
+                    st.success("Birleştirme işlemi tamamlandı! Aşağıdan filtreleme yapabilirsiniz.")
                     
+                    # --- FİLTRELEME BÖLÜMÜ ---
+                    st.divider()
+                    available_subjects = sorted(df_result['KONU'].dropna().unique().tolist())
+                    selected_subjects = st.multiselect(
+                        "🔍 Konuya Göre Filtrele (Boş bırakırsanız tümü indirilir):", 
+                        options=available_subjects,
+                        help="İndirilecek Excel dosyasını sadece seçtiğiniz konularla sınırlandırır."
+                    )
+                    
+                    # Filtreyi Uygula
+                    if selected_subjects:
+                        df_to_download = df_result[df_result['KONU'].isin(selected_subjects)]
+                    else:
+                        df_to_download = df_result
+
+                    # Metrikler (Filtreye göre güncellenir)
                     mcol1, mcol2, mcol3, mcol4 = st.columns(4)
                     mcol1.metric("İşlenen Eski Dosya", len(old_files))
-                    mcol2.metric("Güncellenen Kayıt", updated_count)
+                    mcol2.metric("Güncellenen Toplam Kayıt", updated_count)
                     mcol3.metric("Yeni Eklenen Kayıt", added_count)
-                    mcol4.metric("Toplam Çıktı Kayıt", len(df_merged))
+                    mcol4.metric("İndirilecek Kayıt Sayısı", len(df_to_download))
                     
+                    # Tablolar
                     if not df_updated_records.empty:
-                        with st.expander(f"🔄 Güncellenen (TC & Konu Eşleşen) {updated_count} Kaydı İncele"):
-                            cols_to_show = [c for c in ['İTİRAZ KONUSU KİŞİNİN ADI SOYADI', 'İTİRAZ KONUSU KİŞİNİN TC KİMLİK NO', 'KONU'] if c in df_updated_records.columns]
-                            st.dataframe(df_updated_records[cols_to_show])
+                        with st.expander("🔄 Güncellenen Kayıtları Listele"):
+                            st.dataframe(df_updated_records[['İTİRAZ KONUSU KİŞİNİN ADI SOYADI', 'İTİRAZ KONUSU KİŞİNİN TC KİMLİK NO', 'KONU']])
                     
                     if not invalid_tc_df.empty:
-                        st.warning(f"⚠️ Dikkat: {len(invalid_tc_df)} kayıtta hatalı TC tespit edildi.")
-                        with st.expander("Hatalı Kayıtları İncele"):
+                        with st.expander("⚠️ Hatalı TC Tespit Edilen Kayıtlar"):
                             st.dataframe(invalid_tc_df)
-                    else:
-                        st.info("✅ Tüm TC Kimlik Numarası formatları doğru.")
 
-                    # Dinamik Dosya İsmi Oluşturma (Geliştirme eklendi)
+                    # Dinamik Dosya İsmi
                     current_time = datetime.now().strftime("%d-%m-%Y_%H-%M")
-                    file_name_dynamic = f"Birlestirilmis_Master_{current_time}.xlsx"
+                    filter_suffix = "_Filtreli" if selected_subjects else ""
+                    file_name_dynamic = f"Birlestirilmis_Master{filter_suffix}_{current_time}.xlsx"
 
+                    # Excel Hazırlama
                     output = io.BytesIO()
                     with pd.ExcelWriter(output, engine='openpyxl') as writer:
-                        df_merged.to_excel(writer, index=False, sheet_name='Birleştirilmiş Veri')
+                        df_to_download.to_excel(writer, index=False, sheet_name='Birleştirilmiş Veri')
                     
                     st.download_button(
-                        label=f"📥 {file_name_dynamic} İndir",
+                        label=f"📥 {file_name_dynamic} Dosyasını İndir",
                         data=output.getvalue(),
                         file_name=file_name_dynamic,
-                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                        use_container_width=True
                     )
             except Exception as e:
                 st.error(f"Beklenmeyen bir hata oluştu: {str(e)}")
