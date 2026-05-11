@@ -6,7 +6,8 @@ from datetime import datetime
 st.set_page_config(page_title="Excel Kayıt Birleştirme Aracı", page_icon="📊", layout="wide")
 
 # Virgülle birleştirilmesi istenen özel kolonlar
-CONCAT_COLS = [
+# Not: Eğer Konu bir eşleşme kriteri değilse, onu da virgülle birleştirilecekler listesine dahil ediyoruz.
+DEFAULT_CONCAT_COLS = [
     'PERFORMANS DÖNEMİ', 'DaBT-İPA-Hib-Hep-B', 'HEP B', 'BCG', 'KKK', 
     'HEP A', 'KPA', 'OPA', 'SU ÇİÇEĞİ', 'DaBT-İPA', 'TD', 
     'İTİRAZ NEDENİ', 'ASM RET NEDENİ', 'İLÇE SAĞLIK RET NEDENİ',
@@ -37,33 +38,36 @@ def smart_join(vals):
                     parts.append(clean_sub)
     return ", ".join(dict.fromkeys(parts))
 
-def consolidate_dataframe(df):
-    """TC ve KONU bazında kayıtları virgülle birleştirerek tekilleştirir."""
+def consolidate_dataframe(df, merge_keys, concat_cols):
+    """Belirlenen kriterlere (TC veya TC+KONU) göre kayıtları birleştirir."""
     agg_funcs = {}
     for col in df.columns:
-        if col in ['TEMP_TC', 'TEMP_KONU']:
+        if col in merge_keys:
             continue
-        if col in CONCAT_COLS:
+        if col in concat_cols:
             agg_funcs[col] = lambda x: smart_join(x.tolist())
         else:
-            # Diğer alanlarda (İsim dahil) en son dolu veriyi al
+            # Diğer alanlarda en son dolu veriyi al
             agg_funcs[col] = lambda x: x.dropna().iloc[-1] if not x.dropna().empty else None
             
-    return df.groupby(['TEMP_TC', 'TEMP_KONU'], as_index=False).agg(agg_funcs)
+    return df.groupby(merge_keys, as_index=False).agg(agg_funcs)
 
-def process_data(list_of_old_dfs, df_new):
-    required_cols = ['İTİRAZ KONUSU KİŞİNİN TC KİMLİK NO', 'KONU']
+def process_data(list_of_old_dfs, df_new, use_subject_as_key):
+    # Anahtar sütunları belirle
+    merge_keys = ['TEMP_TC']
+    if use_subject_as_key:
+        merge_keys.append('TEMP_KONU')
     
+    # Eğer Konu anahtar değilse, verilerin kaybolmaması için onu virgülle birleştirilecekler listesine ekle
+    current_concat_cols = DEFAULT_CONCAT_COLS.copy()
+    if not use_subject_as_key:
+        current_concat_cols.append('KONU')
+
     if not list_of_old_dfs or df_new is None or df_new.empty:
         return None, 0, 0, None, None
         
     df_old_all = pd.concat(list_of_old_dfs, ignore_index=True)
     
-    for col in required_cols:
-        if col not in df_old_all.columns or col not in df_new.columns:
-            st.error(f"Kritik hata: '{col}' kolonu dosyalarda bulunamadı!")
-            return None, None, None, None, None
-
     # Standartlaştırma
     df_old_all['TEMP_TC'] = df_old_all['İTİRAZ KONUSU KİŞİNİN TC KİMLİK NO'].apply(clean_tc)
     df_old_all['TEMP_KONU'] = df_old_all['KONU'].apply(clean_text)
@@ -71,12 +75,12 @@ def process_data(list_of_old_dfs, df_new):
     df_new['TEMP_TC'] = df_new['İTİRAZ KONUSU KİŞİNİN TC KİMLİK NO'].apply(clean_tc)
     df_new['TEMP_KONU'] = df_new['KONU'].apply(clean_text)
 
-    # 1. ADIM: Kendi içlerinde TC+KONU bazında tekilleştir
-    df_old_all = consolidate_dataframe(df_old_all)
-    df_new = consolidate_dataframe(df_new)
+    # 1. ADIM: Kendi içlerinde seçilen kriterlere göre tekilleştir
+    df_old_all = consolidate_dataframe(df_old_all, merge_keys, current_concat_cols)
+    df_new = consolidate_dataframe(df_new, merge_keys, current_concat_cols)
 
-    df_old_indexed = df_old_all.set_index(['TEMP_TC', 'TEMP_KONU'], drop=False)
-    df_new_indexed = df_new.set_index(['TEMP_TC', 'TEMP_KONU'], drop=False)
+    df_old_indexed = df_old_all.set_index(merge_keys, drop=False)
+    df_new_indexed = df_new.set_index(merge_keys, drop=False)
 
     old_keys = set(df_old_indexed.index)
     new_keys = set(df_new_indexed.index)
@@ -89,7 +93,7 @@ def process_data(list_of_old_dfs, df_new):
 
     # 2. ADIM: BİRLEŞTİRME MANTIĞI
     final_rows = []
-    all_cols = [col for col in df_new.columns if col not in ['TEMP_TC', 'TEMP_KONU']]
+    all_cols = [col for col in df_new.columns if col not in merge_keys]
 
     for key in new_keys:
         new_row = df_new_indexed.loc[key].copy()
@@ -100,7 +104,7 @@ def process_data(list_of_old_dfs, df_new):
                 val_new = new_row[col]
                 val_old = old_row[col] if col in old_row.index else pd.NA
                 
-                if col in CONCAT_COLS:
+                if col in current_concat_cols:
                     new_row[col] = smart_join([val_old, val_new])
                 else:
                     if pd.isna(val_new) or str(val_new).strip() == "":
@@ -121,7 +125,7 @@ def process_data(list_of_old_dfs, df_new):
     invalid_tc_df = df_result[~df_result['TC_CHECK_TEMP'].str.match(r'^\d{11}$')]
     df_result = df_result.drop(columns=['TC_CHECK_TEMP'])
 
-    # Güncellenen kayıtlar (UI tablo için)
+    # Tablo gösterimi için güncellenen kayıtlar
     if updated_count > 0:
         df_updated_records = df_new_indexed.loc[list(updated_keys)].reset_index(drop=True)
     else:
@@ -132,10 +136,23 @@ def process_data(list_of_old_dfs, df_new):
 # UI Tasarımı
 st.title("📊 Excel Kayıt Birleştirme Aracı")
 st.markdown("""
-- Yüklediğiniz dosyalar **sunucuya kaydedilmez**, işlem bittiğinde sistemden silinir.
-- 💡 *Sistem kayıtları artık sadece **"TC Kimlik No"** ve **"Konu"** eşleşmesine göre birleştirir.*
-- 💡 *İşlem bittikten sonra konulara göre filtreleme yapabilir ve filtrelenmiş halini indirebilirsiniz.*
+- Yüklediğiniz dosyalar **sunucuya kaydedilmez**, sayfa yenilendiğinde silinir.
+- 💡 *İzlem alanları ve özel kolonlar eşleşen kayıtlarda otomatik olarak virgülle birleştirilir.*
 """)
+
+# --- KRİTER SEÇİM PANELİ ---
+st.sidebar.header("🛠️ Birleştirme Ayarları")
+selected_criteria = st.sidebar.multiselect(
+    "Eşleştirme Kriterleri",
+    options=["TC Kimlik No", "Konu"],
+    default=["TC Kimlik No", "Konu"],
+    help="Hangi alanlar aynıysa kayıtlar 'aynı kişi' kabul edilsin? (TC Kimlik No zorunludur)"
+)
+
+# TC her zaman zorunlu olsun
+use_subject_as_key = "Konu" in selected_criteria
+if "TC Kimlik No" not in selected_criteria:
+    st.sidebar.warning("TC Kimlik No ana kriterdir, seçim dışı bırakılamaz.")
 
 col1, col2 = st.columns(2)
 
@@ -147,42 +164,38 @@ with col2:
 
 if len(old_files) > 0 and new_file is not None:
     if st.button("🚀 Verileri Birleştir ve Analiz Et"):
-        with st.spinner("TC ve Konu bazlı eşleştirme yapılıyor..."):
+        with st.spinner("Veriler eşleştiriliyor..."):
             try:
                 list_of_old_dfs = [pd.read_excel(f) for f in old_files]
                 df_new = pd.read_excel(new_file)
                 
-                df_result, updated_count, added_count, invalid_tc_df, df_updated_records = process_data(list_of_old_dfs, df_new)
+                df_result, updated_count, added_count, invalid_tc_df, df_updated_records = process_data(list_of_old_dfs, df_new, use_subject_as_key)
                 
                 if df_result is not None:
-                    st.success("Birleştirme işlemi tamamlandı! Aşağıdan filtreleme yapabilirsiniz.")
+                    st.success(f"Birleştirme tamamlandı! (Kriter: {'TC + Konu' if use_subject_as_key else 'Sadece TC'})")
                     
                     # --- FİLTRELEME BÖLÜMÜ ---
                     st.divider()
                     available_subjects = sorted(df_result['KONU'].dropna().unique().tolist())
                     selected_subjects = st.multiselect(
-                        "🔍 Konuya Göre Filtrele (Boş bırakırsanız tümü indirilir):", 
-                        options=available_subjects,
-                        help="İndirilecek Excel dosyasını sadece seçtiğiniz konularla sınırlandırır."
+                        "🔍 Sonucu Konuya Göre Filtrele (İndirmeden önce):", 
+                        options=available_subjects
                     )
                     
-                    # Filtreyi Uygula
-                    if selected_subjects:
-                        df_to_download = df_result[df_result['KONU'].isin(selected_subjects)]
-                    else:
-                        df_to_download = df_result
+                    df_to_download = df_result[df_result['KONU'].isin(selected_subjects)] if selected_subjects else df_result
 
-                    # Metrikler (Filtreye göre güncellenir)
+                    # Metrikler
                     mcol1, mcol2, mcol3, mcol4 = st.columns(4)
                     mcol1.metric("İşlenen Eski Dosya", len(old_files))
-                    mcol2.metric("Güncellenen Toplam Kayıt", updated_count)
+                    mcol2.metric("Güncellenen Kayıt", updated_count)
                     mcol3.metric("Yeni Eklenen Kayıt", added_count)
-                    mcol4.metric("İndirilecek Kayıt Sayısı", len(df_to_download))
+                    mcol4.metric("İndirilecek Kayıt", len(df_to_download))
                     
                     # Tablolar
                     if not df_updated_records.empty:
                         with st.expander("🔄 Güncellenen Kayıtları Listele"):
-                            st.dataframe(df_updated_records[['İTİRAZ KONUSU KİŞİNİN ADI SOYADI', 'İTİRAZ KONUSU KİŞİNİN TC KİMLİK NO', 'KONU']])
+                            cols_to_show = [c for c in ['İTİRAZ KONUSU KİŞİNİN ADI SOYADI', 'İTİRAZ KONUSU KİŞİNİN TC KİMLİK NO', 'KONU'] if c in df_updated_records.columns]
+                            st.dataframe(df_updated_records[cols_to_show])
                     
                     if not invalid_tc_df.empty:
                         with st.expander("⚠️ Hatalı TC Tespit Edilen Kayıtlar"):
@@ -190,10 +203,8 @@ if len(old_files) > 0 and new_file is not None:
 
                     # Dinamik Dosya İsmi
                     current_time = datetime.now().strftime("%d-%m-%Y_%H-%M")
-                    filter_suffix = "_Filtreli" if selected_subjects else ""
-                    file_name_dynamic = f"Birlestirilmis_Master{filter_suffix}_{current_time}.xlsx"
+                    file_name_dynamic = f"Birlestirilmis_Master_{current_time}.xlsx"
 
-                    # Excel Hazırlama
                     output = io.BytesIO()
                     with pd.ExcelWriter(output, engine='openpyxl') as writer:
                         df_to_download.to_excel(writer, index=False, sheet_name='Birleştirilmiş Veri')
@@ -206,4 +217,4 @@ if len(old_files) > 0 and new_file is not None:
                         use_container_width=True
                     )
             except Exception as e:
-                st.error(f"Beklenmeyen bir hata oluştu: {str(e)}")
+                st.error(f"Hata: {str(e)}")
